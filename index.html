@@ -1155,7 +1155,7 @@ function renderDashboard(days){
 
   // ── Mapa de cumplimiento con tooltips ──
   const streakDots=dayStats.map(d=>{
-    const dStr=dateKey(d);
+    const dStr=dateKey(d.date);
     const label=dStr+' — '+(d.pct!==null?d.pct+'% completado':'sin tareas');
     if(d.pct===null) return `<div class="streak-dot" title="${label}"></div>`;
     if(d.pct===100)  return `<div class="streak-dot done" title="${label}"></div>`;
