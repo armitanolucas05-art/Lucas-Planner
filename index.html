@@ -1065,6 +1065,7 @@ function editHabit(id){openHabitModal(id);}
 // ═══ DASHBOARD ═══
 function renderDashboard(days){
   const container=document.getElementById('dashContent');
+  try {
   let dates=[];
   let numDays;
   if(days==='all'){
@@ -1303,6 +1304,10 @@ function renderDashboard(days){
     </div>
 
   </div>`;
+  } catch(err) {
+    container.innerHTML = '<div style="padding:20px;color:var(--accent2);font-size:13px"><b>Error:</b> ' + err.message + '</div>';
+    console.error('Dashboard error:', err);
+  }
 }
 
 
