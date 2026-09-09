@@ -133,6 +133,12 @@
   .dash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:24px;}
   .dash-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px;}
   .dash-card-title{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:14px;}
+  .dash-card-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:14px;}
+  .dash-card-title-row .dash-card-title{margin-bottom:0;}
+  .dash-info-btn{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;}
+  .dash-info-btn:hover,.dash-info-btn.active{border-color:var(--accent);color:var(--accent);}
+  .dash-info-panel{display:none;font-size:12px;color:var(--muted);line-height:1.5;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:10px 0 4px;}
+  .dash-info-panel.open{display:block;}
   .kpi-row{display:flex;justify-content:space-around;}
   .kpi-item{text-align:center;}
   .kpi-num{font-family:var(--font-display);font-size:28px;font-weight:700;}
@@ -1203,6 +1209,20 @@ function deleteHabit(id){
 function editHabit(id){openHabitModal(id);}
 
 // ═══ DASHBOARD ═══
+function dashHeader(title,id,info){
+  return `<div class="dash-card-title-row">
+    <div class="dash-card-title">${title}</div>
+    <button class="dash-info-btn" id="dashInfoBtn_${id}" onclick="toggleDashInfo('${id}')">?</button>
+  </div>
+  <div class="dash-info-panel" id="dashInfo_${id}">${info}</div>`;
+}
+function toggleDashInfo(id){
+  const panel=document.getElementById('dashInfo_'+id);
+  const btn=document.getElementById('dashInfoBtn_'+id);
+  if(!panel) return;
+  const isOpen=panel.classList.toggle('open');
+  if(btn) btn.classList.toggle('active',isOpen);
+}
 function renderDashboard(days){
   const container=document.getElementById('dashContent');
   try {
@@ -1232,13 +1252,6 @@ function renderDashboard(days){
   const avgPct     =dayStats.filter(d=>d.pct!==null).length ? dayStats.filter(d=>d.pct!==null).reduce((a,d,_,arr)=>a+d.pct/arr.length,0) : 0;
   const activeDays =dayStats.filter(d=>d.total>0).length;
   const avgLoad    =activeDays>0?(totalTasks/activeDays).toFixed(1):0;
-
-  const pendingOld=tasks.filter(t=>{
-    if(t.recurring) return false;
-    const created=new Date(t.createdAt||Date.now());
-    const diff=(new Date()-created)/(1000*60*60*24);
-    return getStatusForDate(t,dateKey(new Date()))==='pending'&&diff>3;
-  }).length;
 
   const notasSinFecha=notas.filter(n=>n.type==='tarea'&&!n.converted).length;
   const ideasSinPlan =notas.filter(n=>n.type==='idea'&&!n.converted).length;
@@ -1296,7 +1309,7 @@ function renderDashboard(days){
   <div class="dash-grid">
 
     <div class="dash-card">
-      <div class="dash-card-title">Resumen — últimos ${numDays} días</div>
+      ${dashHeader('Resumen — últimos '+numDays+' días','resumen','Cuenta todas las ocurrencias de tareas y hábitos dentro del rango de fechas elegido arriba (incluye pendientes, realizadas y no realizadas). El % promedio diario es el promedio de los porcentajes de cada día — cada día pesa igual, sin importar cuántas tareas tuvo ese día.')}
       <div class="kpi-row">
         <div class="kpi-item"><div class="kpi-num" style="color:var(--accent)">${totalTasks}</div><div class="kpi-label">Ocurrencias totales</div></div>
         <div class="kpi-item"><div class="kpi-num" style="color:var(--accent3)">${totalDone}</div><div class="kpi-label">Realizadas</div></div>
@@ -1310,9 +1323,14 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      <div class="dash-card-title">📅 Cumplimiento de lo planificado</div>
+      ${dashHeader('📅 Cumplimiento de lo planificado','planificado','Solo tareas marcadas con 📅 que tengan alguna fecha dentro del rango elegido arriba. El % se calcula sobre las que ya marcaste como realizada o no realizada — las que quedaron pendientes (sin marcar) no suman ni restan.')}
       ${(()=>{
-        const planned=tasks.filter(t=>t.planned===true);
+        const dateSet=new Set(dates.map(d=>dateKey(d)));
+        const planned=tasks.filter(t=>{
+          if(t.planned!==true) return false;
+          if(t.recurring) return Array.isArray(t.recurringDays)&&t.recurringDays.some(ds=>dateSet.has(ds));
+          return dateSet.has(t.date);
+        });
         let plannedDone=0, plannedMissed=0;
         planned.forEach(t=>{
           dates.forEach(d=>{
@@ -1340,7 +1358,7 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card" style="border-color:${(notasSinFecha+ideasSinPlan)>0?'var(--accent2)':'var(--border)'}">
-      <div class="dash-card-title">📋 Pendientes de planificar</div>
+      ${dashHeader('📋 Pendientes de planificar','pendplan','Foto del estado actual — no depende del rango de fechas elegido arriba. Cuenta las notas tipo "sin fecha" y las "ideas" que todavía no convertiste en una tarea con fecha.')}
       <div style="display:flex;justify-content:space-around;padding:8px 0">
         <div style="text-align:center">
           <div class="kpi-num" style="font-size:36px;color:${notasSinFecha===0?'var(--accent3)':'var(--accent2)'}">${notasSinFecha}</div>
@@ -1355,7 +1373,7 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      <div class="dash-card-title">Últimos 7 días</div>
+      ${dashHeader('Últimos 7 días','ult7','Siempre muestra los últimos 7 días corridos, sin importar el rango elegido arriba.')}
       <div class="week-completion">
         ${last7.map(d=>{
           const h=d.pct!==null?Math.max(4,(d.pct/100)*52):4;
@@ -1368,7 +1386,7 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      <div class="dash-card-title">📊 Planificado vs Espontáneo</div>
+      ${dashHeader('📊 Planificado vs Espontáneo','planvsesp','Cuenta TODAS las tareas de la app, de cualquier fecha — no se filtra por el rango elegido arriba. Compara cuántas marcaste con 📅 planificada contra las que cargaste sin planificación previa.')}
       ${(()=>{
         const total=tasks.length;
         const planned=tasks.filter(t=>t.planned===true).length;
@@ -1391,7 +1409,7 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      <div class="dash-card-title">🔄 Hábitos — cumplimiento</div>
+      ${dashHeader('🔄 Hábitos — cumplimiento','habitos','Cuenta ocurrencias de hábitos fijos y tareas recurrentes dentro del rango elegido arriba, que ya hayas marcado como realizado o no realizado. Las pendientes no cuentan.')}
       <div style="text-align:center;padding:6px 0">
         <div class="kpi-num" style="font-size:36px;color:${habitPct>=80?'var(--accent3)':habitPct>=50?'var(--accent4)':'var(--accent2)'}">${habitPct}%</div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Hábitos fijos + tareas recurrentes</div>
@@ -1404,7 +1422,7 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      <div class="dash-card-title">⏱ Horas por categoría (realizadas)</div>
+      ${dashHeader('⏱ Horas por categoría (realizadas)','horascat','Suma las horas de tareas marcadas como realizadas, con hora de inicio y fin cargada, dentro del rango elegido arriba.')}
       ${catHoursSorted.length?`<div class="bar-chart">${catHoursSorted.map(([cat,mins])=>{
         const hrs=(mins/60).toFixed(1);
         return `<div class="bar-row"><div class="bar-label">${getCatInfo(cat).nombre}</div><div class="bar-track"><div class="bar-fill" style="width:${Math.round(mins/maxHours*100)}%;background:${getCatInfo(cat).color}"></div></div><div class="bar-pct">${hrs}h</div></div>`;
@@ -1412,18 +1430,10 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      <div class="dash-card-title">✅ Cumplimiento por categoría</div>
+      ${dashHeader('✅ Cumplimiento por categoría','cumplcat','Para cada categoría, compara cuántas veces marcaste "realizada" contra el total de veces que la marcaste (realizada + no realizada) dentro del rango elegido arriba. Las pendientes no cuentan.')}
       ${catRateSorted.length?`<div class="bar-chart">
         ${catRateSorted.map(([cat,pct])=>`<div class="bar-row"><div class="bar-label">${getCatInfo(cat).nombre}</div><div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${pct>=80?'var(--accent3)':pct>=50?'var(--accent)':'var(--accent2)'}"></div></div><div class="bar-pct">${pct}%</div></div>`).join('')}
       </div>`:`<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Marcá tareas como realizadas o no realizadas para ver esta métrica</div>`}
-    </div>
-
-    <div class="dash-card">
-      <div class="dash-card-title">⚠ Pendientes de más de 3 días</div>
-      <div style="text-align:center;padding:8px 0 14px">
-        <div class="kpi-num" style="color:${pendingOld>0?'var(--accent2)':'var(--accent3)'}">${pendingOld}</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:6px">${pendingOld===0?'Todo al día ✓':'Tareas sin resolver hace más de 3 días'}</div>
-      </div>
     </div>
 
   </div>`;
