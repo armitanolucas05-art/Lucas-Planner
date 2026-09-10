@@ -456,10 +456,15 @@
       <div class="form-row" style="margin:0"><label class="form-label">Hora fin</label><input class="form-input" type="time" id="taskTimeEnd"/></div>
     </div>
     <div class="form-row"><label class="form-label">Nota</label><textarea class="form-textarea" id="taskNote" placeholder="Detalles..."></textarea></div>
-    <div class="form-row">
+    <div class="form-row" id="taskPlannedRow">
       <div class="toggle-row">
         <div><div class="toggle-label">📅 Tarea planificada</div><div class="toggle-sub">La planificaste con anticipación (afecta las métricas)</div></div>
         <label class="toggle"><input type="checkbox" id="taskPlanned"><span class="toggle-slider"></span></label>
+      </div>
+    </div>
+    <div class="form-row" id="taskPlannedAutoNote" style="display:none">
+      <div style="font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;line-height:1.5">
+        📅 Para tareas repetitivas esto se calcula solo: el día que la creás cuenta como espontánea, los días siguientes cuentan como planificados.
       </div>
     </div>
     <div class="form-row">
@@ -920,6 +925,16 @@ function getStatusForDate(t,dateStr){
   if(log===true)     return 'done';
   return 'pending';
 }
+// Para tareas recurrentes, "planificada" se calcula por ocurrencia: el mismo día en que
+// se creó la tarea es espontáneo, cualquier día posterior es planificado. Para tareas
+// puntuales se respeta el switch manual (planned) tal cual lo cargó el usuario.
+function isPlannedOccurrence(t,dStr){
+  if(t.recurring){
+    const created=t.createdAt?dateKey(new Date(t.createdAt)):null;
+    return created?dStr>created:true;
+  }
+  return t.planned===true;
+}
 function cycleStatus(current){
   if(current==='pending') return 'done';
   if(current==='done')    return 'missed';
@@ -1323,20 +1338,14 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      ${dashHeader('📅 Cumplimiento de lo planificado','planificado','Solo tareas marcadas con 📅 que tengan alguna fecha dentro del rango elegido arriba. El % se calcula sobre las que ya marcaste como realizada o no realizada — las que quedaron pendientes (sin marcar) no suman ni restan.')}
+      ${dashHeader('📅 Cumplimiento de lo planificado','planificado','Cuenta ocurrencias dentro del rango elegido arriba que cuentan como "planificadas": para tareas puntuales, las que marcaste con el switch 📅; para tareas repetitivas, cualquier día posterior al que las creaste (el día que las creás cuenta como espontáneo). El % se calcula sobre las que ya marcaste realizada o no realizada — las pendientes no suman ni restan.')}
       ${(()=>{
-        const dateSet=new Set(dates.map(d=>dateKey(d)));
-        const planned=tasks.filter(t=>{
-          if(t.planned!==true) return false;
-          if(t.recurring) return Array.isArray(t.recurringDays)&&t.recurringDays.some(ds=>dateSet.has(ds));
-          return dateSet.has(t.date);
-        });
-        let plannedDone=0, plannedMissed=0;
-        planned.forEach(t=>{
-          dates.forEach(d=>{
-            const dStr=dateKey(d);
-            const applies=t.recurring?(t.recurringDays&&t.recurringDays.includes(dStr)):(t.date===dStr);
-            if(!applies) return;
+        let plannedOcc=0, plannedDone=0, plannedMissed=0;
+        dates.forEach(d=>{
+          const dStr=dateKey(d);
+          getAllForDate(d).filter(t=>!t.isHabit).forEach(t=>{
+            if(!isPlannedOccurrence(t,dStr)) return;
+            plannedOcc++;
             const s=getStatusForDate(t,dStr);
             if(s==='done') plannedDone++;
             if(s==='missed') plannedMissed++;
@@ -1345,7 +1354,7 @@ function renderDashboard(days){
         const totalOcc=plannedDone+plannedMissed;
         const pct=totalOcc?Math.round(plannedDone/totalOcc*100):0;
         return `<div class="kpi-row">
-          <div class="kpi-item"><div class="kpi-num" style="color:var(--accent4)">${planned.length}</div><div class="kpi-label">Tareas con 📅</div></div>
+          <div class="kpi-item"><div class="kpi-num" style="color:var(--accent4)">${plannedOcc}</div><div class="kpi-label">Ocurrencias con 📅</div></div>
           <div class="kpi-item"><div class="kpi-num" style="color:var(--accent3)">${plannedDone}</div><div class="kpi-label">Veces realizadas</div></div>
           <div class="kpi-item"><div class="kpi-num" style="color:var(--accent2)">${plannedMissed}</div><div class="kpi-label">Veces no realizadas</div></div>
         </div>
@@ -1353,7 +1362,7 @@ function renderDashboard(days){
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:6px"><span>Cumplimiento de lo planificado</span><span style="color:${pct>=80?'var(--accent3)':pct>=50?'var(--accent4)':'var(--accent2)'};font-weight:700">${pct}%</span></div>
           <div class="bar-track" style="height:10px"><div class="bar-fill" style="width:${pct}%;background:${pct>=80?'var(--accent3)':pct>=50?'var(--accent4)':'var(--accent2)'}"></div></div>
         </div>
-        ${planned.length===0?'<div style="font-size:12px;color:var(--muted);margin-top:12px;text-align:center">Marcá tareas como 📅 planificadas al crearlas</div>':''}`;
+        ${plannedOcc===0?'<div style="font-size:12px;color:var(--muted);margin-top:12px;text-align:center">Marcá tareas como 📅 planificadas al crearlas</div>':''}`;
       })()}
     </div>
 
@@ -1386,10 +1395,17 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      ${dashHeader('📊 Planificado vs Espontáneo','planvsesp','Cuenta TODAS las tareas de la app, de cualquier fecha — no se filtra por el rango elegido arriba. Compara cuántas marcaste con 📅 planificada contra las que cargaste sin planificación previa.')}
+      ${dashHeader('📊 Planificado vs Espontáneo','planvsesp','Cuenta TODAS las ocurrencias de tareas de la app, de cualquier fecha — no se filtra por el rango elegido arriba. Para tareas puntuales usa el switch 📅; para repetitivas, cada día posterior al que las creaste cuenta como planificado y el día de creación como espontáneo.')}
       ${(()=>{
-        const total=tasks.length;
-        const planned=tasks.filter(t=>t.planned===true).length;
+        let total=0, planned=0;
+        tasks.forEach(t=>{
+          if(t.recurring){
+            const occs=Array.isArray(t.recurringDays)?t.recurringDays:[];
+            occs.forEach(dStr=>{ total++; if(isPlannedOccurrence(t,dStr)) planned++; });
+          } else {
+            total++; if(isPlannedOccurrence(t,t.date)) planned++;
+          }
+        });
         const spontaneous=total-planned;
         const pctP=total?Math.round(planned/total*100):0;
         const pctS=total?100-pctP:0;
@@ -1581,6 +1597,8 @@ function closeModalOnBg(e){if(e.target===document.getElementById('modalOverlay')
 function toggleRecurring(){
   const show=document.getElementById('taskRecurring').checked;
   document.getElementById('recurringDays').style.display=show?'block':'none';
+  document.getElementById('taskPlannedRow').style.display=show?'none':'block';
+  document.getElementById('taskPlannedAutoNote').style.display=show?'block':'none';
   if(show) renderMiniCalendar();
 }
 function editTask(id){openModal(id);}
@@ -1600,12 +1618,12 @@ function saveTask(){
     note:document.getElementById('taskNote').value.trim(),
     date:dateKey(currentDate),
     recurring:isRecurring, recurringDays,
-    planned:document.getElementById('taskPlanned').checked,
+    planned:isRecurring?false:document.getElementById('taskPlanned').checked,
     done:false, createdAt:new Date().toISOString()
   };
   if(editingTaskId){
     const idx=tasks.findIndex(t=>t.id===editingTaskId);
-    if(idx>-1){task.done=tasks[idx].done;tasks[idx]=task;}
+    if(idx>-1){task.done=tasks[idx].done;task.createdAt=tasks[idx].createdAt||task.createdAt;tasks[idx]=task;}
     showToast('Tarea actualizada ✓');
   } else {tasks.push(task);showToast('Tarea guardada ✓');}
   saveLocal(); apiCall('saveTask',task); closeModal(); renderCurrentView(); scheduleNotifications();
