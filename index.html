@@ -1285,11 +1285,11 @@ function renderDashboard(days){
   });
   const catRateSorted=Object.entries(catTotal).map(([cat,tot])=>[cat,Math.round(((catDoneMap[cat]||0)/tot)*100)]).sort((a,b)=>b[1]-a[1]).slice(0,8);
 
-  // ── Habitos: contar SOLO items que son habitos (recurring o isHabit) por dia del rango ──
+  // ── Habitos: contar SOLO los creados en la pestaña Hábitos, no tareas recurrentes ──
   let habitTotalOcc=0, habitDoneOcc=0, habitMins=0;
   dates.forEach(d=>{
     const dStr=dateKey(d);
-    getAllForDate(d).filter(t=>t.recurring||t.isHabit).forEach(t=>{
+    getAllForDate(d).filter(t=>t.isHabit).forEach(t=>{
       const status=getStatusForDate(t,dStr);
       if(status==='pending') return;
       habitTotalOcc++;
@@ -1409,7 +1409,7 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      ${dashHeader('🔄 Hábitos — cumplimiento','habitos','Cuenta ocurrencias de hábitos fijos y tareas recurrentes dentro del rango elegido arriba, que ya hayas marcado como realizado o no realizado. Las pendientes no cuentan.')}
+      ${dashHeader('🔄 Hábitos — cumplimiento','habitos','Cuenta ocurrencias solo de los hábitos creados en la pestaña Hábitos, dentro del rango elegido arriba, que ya hayas marcado como realizado o no realizado. Las tareas recurrentes de la pestaña Tareas no entran acá. Las pendientes no cuentan.')}
       <div style="text-align:center;padding:6px 0">
         <div class="kpi-num" style="font-size:36px;color:${habitPct>=80?'var(--accent3)':habitPct>=50?'var(--accent4)':'var(--accent2)'}">${habitPct}%</div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Hábitos fijos + tareas recurrentes</div>
