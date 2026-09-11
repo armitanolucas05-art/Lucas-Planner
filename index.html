@@ -25,6 +25,7 @@
   .sync-ok{background:rgba(106,255,160,0.15);color:var(--accent3);}
   .sync-err{background:rgba(255,106,106,0.15);color:var(--accent2);}
   .sync-ing{background:rgba(124,106,255,0.15);color:var(--accent);}
+  .sync-pending{background:rgba(255,208,106,0.18);color:var(--accent4);}
 
   nav{display:flex;gap:4px;padding:10px 20px;background:var(--surface);border-bottom:1px solid var(--border);overflow-x:auto;}
   nav button{background:none;border:1px solid transparent;color:var(--muted);font-family:var(--font-body);font-size:13px;font-weight:500;padding:6px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;transition:all 0.15s;}
@@ -485,6 +486,15 @@
         <div class="mini-cal-selected" id="calSelectedCount"></div>
       </div>
     </div>
+    <div class="form-row" id="taskApplyAllRow" style="display:none">
+      <div style="font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;line-height:1.5">
+        Estás editando la ocurrencia del <strong id="taskApplyAllDate"></strong>.
+      </div>
+      <div class="toggle-row">
+        <div><div class="toggle-label">Aplicar este cambio a todos los días</div><div class="toggle-sub">Si lo dejás apagado, el cambio queda solo para este día puntual</div></div>
+        <label class="toggle"><input type="checkbox" id="taskApplyAll"><span class="toggle-slider"></span></label>
+      </div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveTask()">Guardar</button>
@@ -655,6 +665,12 @@ function showToast(msg,type='success'){
 }
 function setSyncStatus(state){
   const el=document.getElementById('syncStatus');
+  if(!el) return;
+  if(syncQueue.length>0){
+    el.textContent='⏳ '+syncQueue.length+' pendiente'+(syncQueue.length>1?'s':'');
+    el.className='sync-status sync-pending';
+    return;
+  }
   if(state==='ok'){el.textContent='✓ Sincronizado';el.className='sync-status sync-ok';}
   if(state==='err'){el.textContent='✗ Sin conexión';el.className='sync-status sync-err';}
   if(state==='ing'){el.textContent='↻ Sincronizando';el.className='sync-status sync-ing';}
@@ -709,7 +725,7 @@ function migrateCategoriasIfNeeded(){
     if(categorias.find(c=>c.id===catId)) return;
     const cat={id:catId, nombre:DEFAULT_CAT_LABELS[catId]||catId, color:DEFAULT_CAT_COLORS[catId]||'#7c6aff', createdAt:new Date().toISOString()};
     categorias.push(cat);
-    apiCall('saveCategoria',cat);
+    queueChange('saveCategoria',cat);
   });
   saveLocal();
   localStorage.setItem('lucasCategoriasMigrated','1');
@@ -732,7 +748,7 @@ function addCategoria(){
   if(!nombre){showToast('Escribí un nombre','error');return;}
   const cat={id:slugifyCategoria(nombre), nombre, color, createdAt:new Date().toISOString()};
   categorias.push(cat);
-  saveLocal(); apiCall('saveCategoria',cat);
+  saveLocal(); queueChange('saveCategoria',cat);
   document.getElementById('newCategoriaNombre').value='';
   showToast('Categoría creada ✓');
   renderCategoriasConfig(); renderCategoriaSelects();
@@ -744,7 +760,7 @@ function deleteCategoria(id){
     : '¿Eliminar esta categoría?';
   if(!confirm(msg)) return;
   categorias=categorias.filter(c=>c.id!==id);
-  saveLocal(); apiCall('deleteCategoria',{id});
+  saveLocal(); queueChange('deleteCategoria',{id});
   showToast('Categoría eliminada');
   renderCategoriasConfig(); renderCategoriaSelects();
 }
@@ -822,6 +838,43 @@ function apiCall(action,payload={}){
   });
 }
 
+// ═══ COLA DE SINCRONIZACIÓN OFFLINE ═══
+// Toda escritura (guardar/borrar tarea, hábito, nota, máxima, categoría, marcar completada)
+// pasa PRIMERO por acá. El cambio ya quedó guardado en el estado local antes de llamar a
+// queueChange — esto solo se asegura de que también llegue a Sheets, con reintentos,
+// en vez de un apiCall directo que si falla se pierde en silencio.
+let syncQueue=[];
+let syncQueueRunning=false;
+function loadSyncQueue(){
+  try{syncQueue=JSON.parse(localStorage.getItem('lucasSyncQueue')||'[]');}catch{syncQueue=[];}
+}
+function persistSyncQueue(){
+  try{localStorage.setItem('lucasSyncQueue',JSON.stringify(syncQueue));}catch(e){}
+  setSyncStatus('ok');
+}
+function queueChange(action,payload){
+  syncQueue.push({qid:uid(),action,payload,ts:Date.now()});
+  persistSyncQueue();
+  if(navigator.onLine) processSyncQueue();
+}
+async function processSyncQueue(){
+  if(syncQueueRunning||!scriptUrl||!navigator.onLine||syncQueue.length===0) return;
+  syncQueueRunning=true;
+  const pending=[...syncQueue];
+  for(const item of pending){
+    const res=await apiCall(item.action,item.payload);
+    if(res&&res.ok){
+      syncQueue=syncQueue.filter(q=>q.qid!==item.qid);
+      persistSyncQueue();
+    } else {
+      break; // se corta y se reintenta desde acá en el próximo intento, en orden
+    }
+  }
+  syncQueueRunning=false;
+}
+window.addEventListener('online',processSyncQueue);
+setInterval(processSyncQueue,30000);
+
 // ═══ SYNC ═══
 function cleanTask(t){
   if(!t||!t.id||!t.title) return null;
@@ -836,6 +889,10 @@ function cleanTask(t){
   if(t.recurringDays&&typeof t.recurringDays==='string'){
     try{t.recurringDays=JSON.parse(t.recurringDays);}catch{t.recurringDays=[];}
   }
+  if(typeof t.overrides==='string'){
+    try{t.overrides=JSON.parse(t.overrides);}catch{t.overrides={};}
+  }
+  if(!t.overrides||typeof t.overrides!=='object') t.overrides={};
   // Convertir planned a boolean real (puede venir como 'true'/'TRUE'/true)
   t.planned = (t.planned===true || t.planned==='true' || t.planned==='TRUE');
   // Asegurar que done/recurring tambien sean booleanos reales
@@ -856,11 +913,11 @@ async function syncFromSheets(){
     return n;
   }).filter(Boolean):[];
   if(remoteNotas.length>0) notas=remoteNotas;
-  else if(notas.length>0) notas.forEach(n=>apiCall('saveNota',n));
+  else if(notas.length>0) notas.forEach(n=>queueChange('saveNota',n));
 
   const remoteMaximas=Array.isArray(data.maximas)?data.maximas.filter(m=>m&&m.id):[];
   if(remoteMaximas.length>0) maximas=remoteMaximas;
-  else if(maximas.length>0) maximas.forEach(m=>apiCall('saveMaxima',m));
+  else if(maximas.length>0) maximas.forEach(m=>queueChange('saveMaxima',m));
 
   const remoteCategorias=Array.isArray(data.categorias)?data.categorias.filter(c=>c&&c.id):[];
   if(remoteCategorias.length>0) categorias=remoteCategorias;
@@ -879,7 +936,7 @@ async function syncFromSheets(){
   }).filter(Boolean):[];
   const remoteLogs  =(data.habitLogs&&typeof data.habitLogs==='object')?data.habitLogs:{};
   if(remoteTasks.length>0) tasks=remoteTasks;
-  else if(tasks.length>0) tasks.forEach(t=>apiCall('saveTask',t));
+  else if(tasks.length>0) tasks.forEach(t=>queueChange('saveTask',t));
   if(remoteHabits.length>0) habits=remoteHabits;
   habitLogs=Object.assign({},habitLogs,remoteLogs);
   migrateCategoriasIfNeeded();
@@ -888,6 +945,7 @@ async function syncFromSheets(){
   setSyncStatus('ok');
   renderCurrentView();
   scheduleNotifications();
+  processSyncQueue();
 }
 
 async function manualSync(){await syncFromSheets();showToast('Sincronizado ✓');}
@@ -935,6 +993,15 @@ function isPlannedOccurrence(t,dStr){
   }
   return t.planned===true;
 }
+// Para una tarea recurrente, si ese dia puntual tiene una excepcion guardada
+// (se editó "solo este día"), se muestran esos valores en vez de los de la plantilla.
+// El id, recurring, recurringDays, date, planned, done y createdAt siempre vienen de la plantilla.
+function applyOverride(t,dStr){
+  if(t.recurring&&t.overrides&&t.overrides[dStr]){
+    return Object.assign({},t,t.overrides[dStr]);
+  }
+  return t;
+}
 function cycleStatus(current){
   if(current==='pending') return 'done';
   if(current==='done')    return 'missed';
@@ -946,7 +1013,7 @@ function toggleTask(id,dateStr){
   const next=cycleStatus(current);
   if(next==='pending') delete habitLogs[key];
   else habitLogs[key]=next;
-  apiCall('logHabit',{habitId:id,dateStr,done:next});
+  queueChange('logHabit',{habitId:id,dateStr,done:next});
   saveLocal();
   renderCurrentView();
 }
@@ -963,7 +1030,7 @@ function getAllForDate(d){
     if(t.recurring&&Array.isArray(t.recurringDays)&&t.recurringDays.includes(key)) return true;
     if(!t.recurring&&t.date===key) return true;
     return false;
-  });
+  }).map(t=>applyOverride(t,key));
   // Habits (from habits list)
   const fromHabits=habits.filter(h=>{
     return Array.isArray(h.days)&&h.days.includes(dow);
@@ -1095,7 +1162,7 @@ function deleteTask(id){
   tasks=tasks.filter(t=>t.id!==id);
   Object.keys(habitLogs).forEach(k=>{if(k.startsWith(id+'_')) delete habitLogs[k];});
   saveLocal();
-  apiCall('deleteTask',{id});
+  queueChange('deleteTask',{id});
   showToast('Tarea eliminada');
   renderCurrentView();
 }
@@ -1210,14 +1277,14 @@ function toggleHabitLog(habitId,dateStr){
   if(next==='pending') delete habitLogs[key];
   else habitLogs[key]=next;
   saveLocal();
-  apiCall('logHabit',{habitId,dateStr,done:next});
+  queueChange('logHabit',{habitId,dateStr,done:next});
   renderHabitos();
 }
 function deleteHabit(id){
   if(!confirm('¿Eliminar este hábito?')) return;
   habits=habits.filter(h=>h.id!==id);
   saveLocal();
-  apiCall('deleteHabit',{id});
+  queueChange('deleteHabit',{id});
   showToast('Hábito eliminado');
   renderHabitos();
 }
@@ -1536,17 +1603,17 @@ function saveNota(){
   };
   if(editingNotaId){const idx=notas.findIndex(n=>n.id===editingNotaId);if(idx>-1)notas[idx]=nota;showToast('Nota actualizada ✓');}
   else{notas.push(nota);showToast('Nota guardada ✓');}
-  saveLocal(); apiCall('saveNota',nota); closeNotaModal(); renderNotas();
+  saveLocal(); queueChange('saveNota',nota); closeNotaModal(); renderNotas();
 }
 function editNota(id){openNotaModal(id);}
 function deleteNota(id){
   if(!confirm('¿Eliminar esta nota?')) return;
-  notas=notas.filter(n=>n.id!==id); saveLocal(); apiCall('deleteNota',{id}); showToast('Nota eliminada'); renderNotas();
+  notas=notas.filter(n=>n.id!==id); saveLocal(); queueChange('deleteNota',{id}); showToast('Nota eliminada'); renderNotas();
 }
 function convertirATarea(notaId){
   const n=notas.find(n=>n.id===notaId);
   if(!n) return;
-  n.converted=true; saveLocal(); apiCall('saveNota',n);
+  n.converted=true; saveLocal(); queueChange('saveNota',n);
   openModal();
   setTimeout(()=>{
     document.getElementById('taskTitleInput').value=n.title;
@@ -1562,21 +1629,31 @@ function openModal(taskId=null){
   editingTaskId=taskId;
   document.getElementById('modalTitle').textContent=taskId?'Editar tarea':'Nueva tarea';
   if(taskId){
-    const t=tasks.find(t=>t.id===taskId);
-    if(t){
+    const base=tasks.find(t=>t.id===taskId);
+    if(base){
+      const dStr=dateKey(currentDate);
+      const t=applyOverride(base,dStr); // valores efectivos para el día que se está viendo
       document.getElementById('taskTitleInput').value  =t.title||'';
       document.getElementById('taskCategory').value    =t.category||'personal';
       document.getElementById('taskPriority').value    =t.priority||'normal';
       document.getElementById('taskTimeStart').value   =String(t.timeStart||'').replace('T:','').substring(0,5);
       document.getElementById('taskTimeEnd').value     =String(t.timeEnd||'').replace('T:','').substring(0,5);
       document.getElementById('taskNote').value        =t.note||'';
-      document.getElementById('taskPlanned').checked   =!!t.planned;
-      document.getElementById('taskRecurring').checked =!!t.recurring;
-      selectedRecurringDates=Array.isArray(t.recurringDays)?t.recurringDays.filter(x=>typeof x==='string'):[];
+      document.getElementById('taskPlanned').checked   =!!base.planned;
+      document.getElementById('taskRecurring').checked =!!base.recurring;
+      selectedRecurringDates=Array.isArray(base.recurringDays)?base.recurringDays.filter(x=>typeof x==='string'):[];
       calViewDate=selectedRecurringDates.length?new Date(selectedRecurringDates[0]+'T00:00:00'):new Date(currentDate);
       toggleRecurring();
+      if(base.recurring){
+        document.getElementById('taskApplyAllRow').style.display='block';
+        document.getElementById('taskApplyAllDate').textContent=formatDate(currentDate);
+        document.getElementById('taskApplyAll').checked=false;
+      } else {
+        document.getElementById('taskApplyAllRow').style.display='none';
+      }
     }
   } else {
+    document.getElementById('taskApplyAllRow').style.display='none';
     document.getElementById('taskTitleInput').value  ='';
     document.getElementById('taskCategory').value    ='personal';
     document.getElementById('taskPriority').value    ='normal';
@@ -1609,24 +1686,60 @@ function saveTask(){
   const isRecurring=document.getElementById('taskRecurring').checked;
   if(isRecurring&&!selectedRecurringDates.length){showToast('Elegí al menos un día en el calendario','error');return;}
   const recurringDays=isRecurring?[...selectedRecurringDates]:[];
-  const task={
-    id:editingTaskId||uid(), title,
+
+  const fieldsFromForm={
+    title,
     category:document.getElementById('taskCategory').value,
     priority:document.getElementById('taskPriority').value,
     timeStart:document.getElementById('taskTimeStart').value,
     timeEnd:document.getElementById('taskTimeEnd').value,
-    note:document.getElementById('taskNote').value.trim(),
+    note:document.getElementById('taskNote').value.trim()
+  };
+
+  // ¿Estamos editando una tarea que YA era recurrente antes de abrir el modal?
+  const existingTask=editingTaskId?tasks.find(t=>t.id===editingTaskId):null;
+  const wasRecurring=!!(existingTask&&existingTask.recurring);
+  const applyAll=wasRecurring?document.getElementById('taskApplyAll').checked:true;
+
+  // Edición de UN SOLO DÍA de una tarea recurrente (checkbox "aplicar a todos" apagado,
+  // y sigue siendo recurrente — si se apagó "repetir" es un cambio estructural, no un override puntual)
+  if(wasRecurring&&isRecurring&&!applyAll){
+    const idx=tasks.findIndex(t=>t.id===editingTaskId);
+    if(idx===-1){showToast('No se encontró la tarea','error');return;}
+    const base=tasks[idx];
+    const dStr=dateKey(currentDate);
+    base.overrides=base.overrides||{};
+    base.overrides[dStr]=fieldsFromForm;
+    base.recurringDays=recurringDays; // los días de repetición siempre son de la plantilla entera
+    saveLocal(); queueChange('saveTask',base); closeModal(); renderCurrentView(); scheduleNotifications();
+    showToast('Cambio guardado solo para este día ✓');
+    return;
+  }
+
+  const task={
+    id:editingTaskId||uid(), title,
+    category:fieldsFromForm.category,
+    priority:fieldsFromForm.priority,
+    timeStart:fieldsFromForm.timeStart,
+    timeEnd:fieldsFromForm.timeEnd,
+    note:fieldsFromForm.note,
     date:dateKey(currentDate),
     recurring:isRecurring, recurringDays,
     planned:isRecurring?false:document.getElementById('taskPlanned').checked,
-    done:false, createdAt:new Date().toISOString()
+    done:false, createdAt:new Date().toISOString(),
+    overrides:{}
   };
   if(editingTaskId){
     const idx=tasks.findIndex(t=>t.id===editingTaskId);
-    if(idx>-1){task.done=tasks[idx].done;task.createdAt=tasks[idx].createdAt||task.createdAt;tasks[idx]=task;}
+    if(idx>-1){
+      task.done=tasks[idx].done;
+      task.createdAt=tasks[idx].createdAt||task.createdAt;
+      task.overrides=tasks[idx].overrides||{}; // se preservan las excepciones puntuales ya cargadas
+      tasks[idx]=task;
+    }
     showToast('Tarea actualizada ✓');
   } else {tasks.push(task);showToast('Tarea guardada ✓');}
-  saveLocal(); apiCall('saveTask',task); closeModal(); renderCurrentView(); scheduleNotifications();
+  saveLocal(); queueChange('saveTask',task); closeModal(); renderCurrentView(); scheduleNotifications();
 }
 
 // ═══ MODAL HABITO ═══
@@ -1676,7 +1789,7 @@ function saveHabit(){
     if(idx>-1) habits[idx]=habit;
     showToast('Hábito actualizado ✓');
   } else {habits.push(habit);showToast('Hábito guardado ✓');}
-  saveLocal(); apiCall('saveHabit',habit); closeHabitModal(); renderHabitos();
+  saveLocal(); queueChange('saveHabit',habit); closeHabitModal(); renderHabitos();
 }
 
 // ═══ NOTIFICATIONS ═══
@@ -1837,24 +1950,26 @@ function saveMaxima() {
     maximas.push(m);
     showToast('Guardada ✓');
   }
-  saveLocal(); apiCall('saveMaxima', m); closeMaximaModal(); renderMaximas();
+  saveLocal(); queueChange('saveMaxima', m); closeMaximaModal(); renderMaximas();
 }
 function editMaxima(id) { openMaximaModal(id); }
 function deleteMaxima(id) {
   if (!confirm('¿Eliminar?')) return;
   maximas = maximas.filter(m => m.id !== id);
-  saveLocal(); apiCall('deleteMaxima', {id}); showToast('Eliminada'); renderMaximas();
+  saveLocal(); queueChange('deleteMaxima', {id}); showToast('Eliminada'); renderMaximas();
 }
 
 // ═══ INIT ═══
 function init(){
   loadLocal();
+  loadSyncQueue();
   migrateCategoriasIfNeeded();
   renderCategoriaSelects();
   selectedWeekDay=new Date();
   document.getElementById('headerDate').textContent=formatShort(new Date());
   renderHoy();
-  if(scriptUrl) setTimeout(()=>syncFromSheets(),800);
+  setSyncStatus('ok');
+  if(scriptUrl){ setTimeout(()=>syncFromSheets(),800); processSyncQueue(); }
   else setSyncStatus('err');
   updateNotifStatus();
   scheduleNotifications();
