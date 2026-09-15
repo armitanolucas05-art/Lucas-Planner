@@ -473,6 +473,18 @@
     </div>
   </div>
   <div class="config-section">
+    <div class="config-title">Categorías generales (Distribución diaria)</div>
+    <div class="config-card">
+      <strong>Para la grilla de Distribución diaria — son independientes de las categorías de Tareas</strong>
+      <div id="categoriasGeneralesList" style="margin-top:8px"></div>
+      <div class="categoria-add-row">
+        <input class="form-input" id="newCategoriaGeneralNombre" placeholder="Nombre nueva categoría"/>
+        <input class="categoria-color-input" type="color" id="newCategoriaGeneralColor" value="#7c6aff"/>
+        <button class="btn btn-primary btn-sm" onclick="addCategoriaGeneral()">+ Agregar</button>
+      </div>
+    </div>
+  </div>
+  <div class="config-section">
     <div class="config-title">Datos</div>
     <div class="config-card">
       <strong>Limpiar datos locales</strong>
@@ -670,7 +682,8 @@ let habits   = [];
 let habitLogs= {};
 let notas    = [];
 let maximas  = [];
-let categorias = []; // {id, nombre, color, createdAt}
+let categorias = []; // {id, nombre, color, createdAt} — categorías de Tareas
+let categoriasGenerales = []; // {id, nombre, color, createdAt} — categorías generales de Distribución diaria (independientes de las de Tareas)
 let calViewDate = new Date();       // mes que muestra el mini-calendario de repeticion
 let selectedRecurringDates = [];    // fechas puntuales elegidas para una tarea recurrente ('YYYY-MM-DD')
 let distribucionIdeal = {bloques:new Array(48).fill(null)}; // 48 bloques de 30' -> id de categoria o null
@@ -757,6 +770,60 @@ function catTag(catId){
   const info=getCatInfo(catId);
   return `<span class="tag" style="background:${catBg(info.color)};color:${info.color}">${info.nombre}</span>`;
 }
+// ═══ CATEGORÍAS GENERALES (Distribución diaria — independientes de las de Tareas) ═══
+function getCatGeneralInfo(catId){
+  const c=categoriasGenerales.find(c=>c.id===catId);
+  if(c) return {nombre:c.nombre, color:c.color||'#7070a0'};
+  return {nombre:catId||'Sin categoría', color:'#7070a0'};
+}
+function catGeneralTag(catId){
+  const info=getCatGeneralInfo(catId);
+  return `<span class="tag" style="background:${catBg(info.color)};color:${info.color}">${info.nombre}</span>`;
+}
+function slugifyCategoriaGeneral(nombre){
+  let base=nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+  if(!base) base='cat';
+  let slug=base, i=1;
+  while(categoriasGenerales.find(c=>c.id===slug)) slug=base+'_'+(++i);
+  return slug;
+}
+function renderCategoriasGeneralesConfig(){
+  const el=document.getElementById('categoriasGeneralesList');
+  if(!el) return;
+  if(!categoriasGenerales.length){el.innerHTML='<p style="margin-top:4px">Todavía no hay categorías generales creadas.</p>';return;}
+  el.innerHTML=[...categoriasGenerales].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(c=>
+    '<div class="categoria-row"><div class="categoria-dot" style="background:'+c.color+'"></div><div class="categoria-name">'+c.nombre+'</div><button class="icon-btn" onclick="deleteCategoriaGeneral(\''+c.id+'\')">🗑️</button></div>'
+  ).join('');
+}
+function addCategoriaGeneral(){
+  const nombre=document.getElementById('newCategoriaGeneralNombre').value.trim();
+  const color=document.getElementById('newCategoriaGeneralColor').value||'#7c6aff';
+  if(!nombre){showToast('Escribí un nombre','error');return;}
+  const cat={id:slugifyCategoriaGeneral(nombre), nombre, color, createdAt:new Date().toISOString()};
+  categoriasGenerales.push(cat);
+  saveLocal(); queueChange('saveCategoriaGeneral',cat);
+  document.getElementById('newCategoriaGeneralNombre').value='';
+  showToast('Categoría general creada ✓');
+  renderCategoriasGeneralesConfig();
+  if(document.getElementById('view-distribucion').classList.contains('active')) renderDistribucion();
+}
+function deleteCategoriaGeneral(id){
+  const enUsoIdeal=distribucionIdeal.bloques.some(b=>b===id);
+  const enUsoReal=Object.values(distribucionReal).some(day=>day&&day[id]!==undefined);
+  const msg=(enUsoIdeal||enUsoReal)
+    ? 'Esta categoría se usa en la Distribución diaria. ¿Eliminarla igual? (los bloques que la usaban quedan sin asignar)'
+    : '¿Eliminar esta categoría general?';
+  if(!confirm(msg)) return;
+  categoriasGenerales=categoriasGenerales.filter(c=>c.id!==id);
+  if(enUsoIdeal){
+    distribucionIdeal.bloques=distribucionIdeal.bloques.map(b=>b===id?null:b);
+    queueChange('saveDistribucionIdeal',distribucionIdeal);
+  }
+  saveLocal(); queueChange('deleteCategoriaGeneral',{id});
+  showToast('Categoría general eliminada');
+  renderCategoriasGeneralesConfig();
+  if(document.getElementById('view-distribucion').classList.contains('active')) renderDistribucion();
+}
 function slugifyCategoria(nombre){
   let base=nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
   if(!base) base='cat';
@@ -789,8 +856,24 @@ function migrateCategoriasIfNeeded(){
 }
 // Categorías base para la Distribución diaria (Sueño, Comida, Gym, Caminata, Lectura...).
 // Se agregan una sola vez si todavía no existen; no pisa nada que el usuario ya haya creado.
-function seedCategoriasIniciales(){
-  if(localStorage.getItem('lucasCategoriasSeeded')) return;
+// Corrige el error de una versión anterior que había mezclado categorías generales
+// (Sueño, Comida, Gym, Caminata, Lectura) dentro de las categorías de Tareas. Las saca
+// de ahí (solo si no quedaron usadas en ninguna tarea/nota real) y siembra el sistema
+// de categorías generales, separado, para la Distribución diaria.
+function limpiarCategoriasMalUbicadas(){
+  if(localStorage.getItem('lucasCategoriasGeneralesFix')) return;
+  ['sueno','comida','gym','caminata','lectura'].forEach(id=>{
+    const enUso=tasks.some(t=>t.category===id)||notas.some(n=>n.category===id);
+    if(enUso) return;
+    const idx=categorias.findIndex(c=>c.id===id);
+    if(idx>-1){ categorias.splice(idx,1); queueChange('deleteCategoria',{id}); }
+  });
+  saveLocal();
+  localStorage.setItem('lucasCategoriasGeneralesFix','1');
+  renderCategoriaSelects();
+}
+function seedCategoriasGeneralesIniciales(){
+  if(localStorage.getItem('lucasCategoriasGeneralesSeeded')) return;
   const seeds=[
     {id:'trabajo',  nombre:'Trabajo',  color:'#a08aff'},
     {id:'sueno',    nombre:'Sueño',    color:'#6ab8ff'},
@@ -800,14 +883,13 @@ function seedCategoriasIniciales(){
     {id:'lectura',  nombre:'Lectura',  color:'#6ad4ff'}
   ];
   seeds.forEach(s=>{
-    if(categorias.find(c=>c.id===s.id)) return;
+    if(categoriasGenerales.find(c=>c.id===s.id)) return;
     const cat=Object.assign({createdAt:new Date().toISOString()},s);
-    categorias.push(cat);
-    queueChange('saveCategoria',cat);
+    categoriasGenerales.push(cat);
+    queueChange('saveCategoriaGeneral',cat);
   });
   saveLocal();
-  localStorage.setItem('lucasCategoriasSeeded','1');
-  renderCategoriaSelects();
+  localStorage.setItem('lucasCategoriasGeneralesSeeded','1');
 }
 function renderCategoriasConfig(){
   const el=document.getElementById('categoriasList');
@@ -862,7 +944,7 @@ function renderDistGrid(){
   let html='';
   for(let i=0;i<48;i++){
     const catId=distribucionIdeal.bloques[i];
-    const info=catId?getCatInfo(catId):null;
+    const info=catId?getCatGeneralInfo(catId):null;
     const bg=info?catBg(info.color):'transparent';
     const color=info?info.color:'var(--muted)';
     html+=`<div class="dist-block" style="background:${bg};color:${color}" onclick="openDistPicker(${i})">
@@ -885,7 +967,7 @@ function renderDistSummary(){
   const totalAsignado=cats.reduce((a,c)=>a+counts[c],0);
   el.innerHTML='<table class="dist-summary-tbl"><tbody>'
     +cats.sort((a,b)=>counts[b]-counts[a]).map(catId=>{
-      const info=getCatInfo(catId);
+      const info=getCatGeneralInfo(catId);
       return '<tr><td><span class="categoria-dot" style="background:'+info.color+';display:inline-block;margin-right:6px"></span>'+info.nombre+'</td>'
         +'<td style="text-align:right;font-weight:700">'+counts[catId]+'h</td></tr>';
     }).join('')
@@ -897,7 +979,7 @@ function openDistPicker(i){
   distPickerIndex=i;
   document.getElementById('distPickerTitle').textContent='Bloque '+distTimeLabel(i);
   const list=document.getElementById('distPickerList');
-  const sorted=[...categorias].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  const sorted=[...categoriasGenerales].sort((a,b)=>a.nombre.localeCompare(b.nombre));
   let html='<button class="btn btn-ghost" style="justify-content:flex-start" onclick="setDistBlock(null)">— Vaciar bloque —</button>';
   html+=sorted.map(c=>'<button class="btn" style="justify-content:flex-start;background:'+catBg(c.color)+';color:'+c.color+';border:1px solid '+c.color+'" onclick="setDistBlock(\''+c.id+'\')">'+c.nombre+'</button>').join('');
   list.innerHTML=html;
@@ -935,13 +1017,13 @@ function renderDistReal(){
     return;
   }
   el.innerHTML=cats.sort((a,b)=>counts[b]-counts[a]).map(catId=>{
-    const info=getCatInfo(catId);
+    const info=getCatGeneralInfo(catId);
     const ideal=counts[catId];
     const actual=real[catId]!==undefined?real[catId]:'';
     const actualNum=parseFloat(actual)||0;
     const pct=ideal?Math.min(100,Math.round(actualNum/ideal*100)):0;
     return '<div class="dist-real-row">'
-      +'<div class="dist-real-head">'+catTag(catId)+'<span style="font-size:12px;color:var(--muted)">Ideal: '+ideal+'h</span></div>'
+      +'<div class="dist-real-head">'+catGeneralTag(catId)+'<span style="font-size:12px;color:var(--muted)">Ideal: '+ideal+'h</span></div>'
       +'<div class="dist-real-input-row">'
       +'<input type="number" step="0.5" min="0" class="form-input dist-real-input" id="distReal_'+catId+'" value="'+actual+'" placeholder="Horas reales" onchange="saveDistRealValue(\''+catId+'\')">'
       +'<span style="font-size:12px;font-weight:700;color:'+(pct>=100?'var(--accent3)':'var(--muted)')+'">'+pct+'%</span>'
@@ -1006,6 +1088,7 @@ function saveLocal(){
     localStorage.setItem('lucasNotas',JSON.stringify(notas));
     localStorage.setItem('lucasMaximas',JSON.stringify(maximas));
     localStorage.setItem('lucasCategorias',JSON.stringify(categorias));
+    localStorage.setItem('lucasCategoriasGenerales',JSON.stringify(categoriasGenerales));
     localStorage.setItem('lucasDistIdeal',JSON.stringify(distribucionIdeal));
     localStorage.setItem('lucasDistReal',JSON.stringify(distribucionReal));
   }catch(e){}
@@ -1018,9 +1101,10 @@ function loadLocal(){
     notas     =JSON.parse(localStorage.getItem('lucasNotas')||'[]');
     maximas   =JSON.parse(localStorage.getItem('lucasMaximas')||'[]');
     categorias=JSON.parse(localStorage.getItem('lucasCategorias')||'[]');
+    categoriasGenerales=JSON.parse(localStorage.getItem('lucasCategoriasGenerales')||'[]');
     distribucionIdeal=JSON.parse(localStorage.getItem('lucasDistIdeal')||'null')||{bloques:new Array(48).fill(null)};
     distribucionReal =JSON.parse(localStorage.getItem('lucasDistReal')||'{}');
-  }catch(e){tasks=[];habits=[];habitLogs={};notas=[];maximas=[];categorias=[];distribucionIdeal={bloques:new Array(48).fill(null)};distribucionReal={};}
+  }catch(e){tasks=[];habits=[];habitLogs={};notas=[];maximas=[];categorias=[];categoriasGenerales=[];distribucionIdeal={bloques:new Array(48).fill(null)};distribucionReal={};}
 }
 
 // ═══ JSONP API ═══
@@ -1123,6 +1207,9 @@ async function syncFromSheets(){
   const remoteCategorias=Array.isArray(data.categorias)?data.categorias.filter(c=>c&&c.id):[];
   if(remoteCategorias.length>0) categorias=remoteCategorias;
 
+  const remoteCategoriasGenerales=Array.isArray(data.categoriasGenerales)?data.categoriasGenerales.filter(c=>c&&c.id):[];
+  if(remoteCategoriasGenerales.length>0) categoriasGenerales=remoteCategoriasGenerales;
+
   const remoteDistIdeal=data.distribucionIdeal;
   if(remoteDistIdeal&&Array.isArray(remoteDistIdeal.bloques)&&remoteDistIdeal.bloques.length===48){
     distribucionIdeal=remoteDistIdeal;
@@ -1154,7 +1241,8 @@ async function syncFromSheets(){
   if(remoteHabits.length>0) habits=remoteHabits;
   habitLogs=Object.assign({},habitLogs,remoteLogs);
   migrateCategoriasIfNeeded();
-  seedCategoriasIniciales();
+  limpiarCategoriasMalUbicadas();
+  seedCategoriasGeneralesIniciales();
   renderCategoriaSelects();
   saveLocal();
   setSyncStatus('ok');
@@ -2067,6 +2155,7 @@ function renderConfig(){
   updateNotifStatus();
   updateConnectionStatus();
   renderCategoriasConfig();
+  renderCategoriasGeneralesConfig();
 }
 function saveScriptUrl(){
   scriptUrl=document.getElementById('scriptUrlInput').value.trim();
@@ -2187,7 +2276,8 @@ function init(){
   loadLocal();
   loadSyncQueue();
   migrateCategoriasIfNeeded();
-  seedCategoriasIniciales();
+  limpiarCategoriasMalUbicadas();
+  seedCategoriasGeneralesIniciales();
   renderCategoriaSelects();
   selectedWeekDay=new Date();
   document.getElementById('headerDate').textContent=formatShort(new Date());
