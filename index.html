@@ -233,6 +233,22 @@
   .categoria-add-row{display:flex;gap:8px;margin-top:10px;align-items:center;}
   .categoria-add-row .form-input{flex:1;}
   .categoria-color-input{width:40px;height:36px;padding:2px;border-radius:8px;border:1px solid var(--border);background:var(--card);cursor:pointer;}
+
+  /* DISTRIBUCION DIARIA */
+  .dist-top-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;}
+  @media (max-width:680px){.dist-top-grid{grid-template-columns:1fr;}}
+  .dist-grid{display:flex;flex-direction:column;gap:3px;max-height:520px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:8px;}
+  .dist-block{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:6px;border:1px solid var(--border);font-size:12px;cursor:pointer;transition:transform 0.1s;}
+  .dist-block:active{transform:scale(0.98);}
+  .dist-block-time{font-weight:600;opacity:0.8;}
+  .dist-block-cat{font-weight:600;}
+  .dist-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+  .dist-summary-tbl{width:100%;border-collapse:collapse;font-size:13px;}
+  .dist-summary-tbl td{padding:6px 0;}
+  .dist-real-row{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;}
+  .dist-real-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+  .dist-real-input-row{display:flex;align-items:center;gap:10px;}
+  .dist-real-input{max-width:120px;}
   .modal-actions{display:flex;gap:8px;margin-top:18px;}
   .modal-actions .btn{flex:1;justify-content:center;padding:11px;}
 
@@ -281,6 +297,7 @@
   <button class="active" onclick="switchView('hoy',this)">Hoy</button>
   <button onclick="switchView('semana',this)">Semana</button>
   <button onclick="switchView('habitos',this)">Hábitos</button>
+  <button onclick="switchView('distribucion',this)">📐 Distribución</button>
   <button onclick="switchView('dashboard',this)">📊 Stats</button>
   <button onclick="switchView('notas',this)">📝 Notas</button>
   <button onclick="switchView('maximas',this)">💎 Máximas</button>
@@ -377,6 +394,41 @@
     <button class="btn btn-ghost btn-sm maxima-filter" onclick="setMaximaFilter('principio',this)">🧭 Principios</button>
   </div>
   <div id="maximaList"></div>
+</div>
+
+<!-- DISTRIBUCION DIARIA -->
+<div id="view-distribucion" class="view">
+  <div class="section-header"><div class="section-title">Distribución diaria</div></div>
+  <div class="dist-top-grid">
+    <div>
+      <div class="dash-card-title">Grilla ideal — tocá un bloque para asignar categoría</div>
+      <div class="dist-grid" id="distGrid"></div>
+    </div>
+    <div>
+      <div class="dash-card-title">Resumen por categoría (ideal)</div>
+      <div class="dist-card" id="distSummaryTable"></div>
+    </div>
+  </div>
+
+  <div class="section-header" style="margin-top:28px">
+    <div class="section-title" id="distRealTitle">Registro real</div>
+    <div class="date-nav" style="padding:0">
+      <button class="date-nav-btn" onclick="changeDistDay(-1)">‹</button>
+      <button class="date-nav-btn" onclick="changeDistDay(1)">›</button>
+    </div>
+  </div>
+  <div id="distRealForm"></div>
+</div>
+
+<!-- PICKER DE CATEGORIA PARA UN BLOQUE -->
+<div class="modal-overlay" id="distPickerOverlay" onclick="closeDistPickerOnBg(event)">
+  <div class="modal" style="max-width:340px">
+    <div class="modal-header">
+      <div class="modal-title" id="distPickerTitle">Elegí la categoría</div>
+      <button class="icon-btn" onclick="closeDistPicker()">✕</button>
+    </div>
+    <div id="distPickerList" style="display:flex;flex-direction:column;gap:6px;max-height:60vh;overflow-y:auto"></div>
+  </div>
 </div>
 
 <!-- CONFIG -->
@@ -621,6 +673,10 @@ let maximas  = [];
 let categorias = []; // {id, nombre, color, createdAt}
 let calViewDate = new Date();       // mes que muestra el mini-calendario de repeticion
 let selectedRecurringDates = [];    // fechas puntuales elegidas para una tarea recurrente ('YYYY-MM-DD')
+let distribucionIdeal = {bloques:new Array(48).fill(null)}; // 48 bloques de 30' -> id de categoria o null
+let distribucionReal = {}; // { 'YYYY-MM-DD': {catId: horas} }
+let distDate = new Date(); // dia mostrado en el registro real de Distribución diaria
+let distPickerIndex = null;
 
 // Set original de categorías — usado UNA sola vez para migrar a la hoja "Categorias"
 // las que ya estén en uso; no se usa para renderizar la UI.
@@ -765,6 +821,125 @@ function deleteCategoria(id){
   renderCategoriasConfig(); renderCategoriaSelects();
 }
 
+// ═══ DISTRIBUCIÓN DIARIA ═══
+function distTimeLabel(i){
+  const h=Math.floor(i/2), m=(i%2)*30;
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+}
+function renderDistribucion(){
+  if(!Array.isArray(distribucionIdeal.bloques)||distribucionIdeal.bloques.length!==48){
+    distribucionIdeal={bloques:new Array(48).fill(null)};
+  }
+  renderDistGrid();
+  renderDistSummary();
+  renderDistReal();
+}
+function renderDistGrid(){
+  const el=document.getElementById('distGrid');
+  if(!el) return;
+  let html='';
+  for(let i=0;i<48;i++){
+    const catId=distribucionIdeal.bloques[i];
+    const info=catId?getCatInfo(catId):null;
+    const bg=info?catBg(info.color):'transparent';
+    const color=info?info.color:'var(--muted)';
+    html+=`<div class="dist-block" style="background:${bg};color:${color}" onclick="openDistPicker(${i})">
+      <span class="dist-block-time">${distTimeLabel(i)}</span>
+      <span class="dist-block-cat">${info?info.nombre:'— sin asignar —'}</span>
+    </div>`;
+  }
+  el.innerHTML=html;
+}
+function renderDistSummary(){
+  const el=document.getElementById('distSummaryTable');
+  if(!el) return;
+  const counts={};
+  distribucionIdeal.bloques.forEach(catId=>{ if(catId) counts[catId]=(counts[catId]||0)+0.5; });
+  const cats=Object.keys(counts);
+  if(!cats.length){
+    el.innerHTML='<p style="font-size:12px;color:var(--muted)">Todavía no asignaste ningún bloque de la grilla.</p>';
+    return;
+  }
+  const totalAsignado=cats.reduce((a,c)=>a+counts[c],0);
+  el.innerHTML='<table class="dist-summary-tbl"><tbody>'
+    +cats.sort((a,b)=>counts[b]-counts[a]).map(catId=>{
+      const info=getCatInfo(catId);
+      return '<tr><td><span class="categoria-dot" style="background:'+info.color+';display:inline-block;margin-right:6px"></span>'+info.nombre+'</td>'
+        +'<td style="text-align:right;font-weight:700">'+counts[catId]+'h</td></tr>';
+    }).join('')
+    +'<tr><td style="padding-top:8px;color:var(--muted);border-top:1px solid var(--border)">Total asignado</td>'
+    +'<td style="text-align:right;padding-top:8px;color:var(--muted);border-top:1px solid var(--border)">'+totalAsignado+'h / 24h</td></tr>'
+    +'</tbody></table>';
+}
+function openDistPicker(i){
+  distPickerIndex=i;
+  document.getElementById('distPickerTitle').textContent='Bloque '+distTimeLabel(i);
+  const list=document.getElementById('distPickerList');
+  const sorted=[...categorias].sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  let html='<button class="btn btn-ghost" style="justify-content:flex-start" onclick="setDistBlock(null)">— Vaciar bloque —</button>';
+  html+=sorted.map(c=>'<button class="btn" style="justify-content:flex-start;background:'+catBg(c.color)+';color:'+c.color+';border:1px solid '+c.color+'" onclick="setDistBlock(\''+c.id+'\')">'+c.nombre+'</button>').join('');
+  list.innerHTML=html;
+  document.getElementById('distPickerOverlay').classList.add('open');
+}
+function closeDistPicker(){document.getElementById('distPickerOverlay').classList.remove('open');distPickerIndex=null;}
+function closeDistPickerOnBg(e){if(e.target===document.getElementById('distPickerOverlay'))closeDistPicker();}
+function setDistBlock(catId){
+  if(distPickerIndex===null) return;
+  distribucionIdeal.bloques[distPickerIndex]=catId;
+  saveLocal();
+  queueChange('saveDistribucionIdeal',distribucionIdeal);
+  renderDistGrid();
+  renderDistSummary();
+  renderDistReal();
+  closeDistPicker();
+}
+function changeDistDay(delta){
+  distDate=new Date(distDate);
+  distDate.setDate(distDate.getDate()+delta);
+  renderDistReal();
+}
+function renderDistReal(){
+  const titleEl=document.getElementById('distRealTitle');
+  if(!titleEl) return;
+  titleEl.textContent='Registro real — '+formatDate(distDate);
+  const dStr=dateKey(distDate);
+  const counts={};
+  distribucionIdeal.bloques.forEach(catId=>{ if(catId) counts[catId]=(counts[catId]||0)+0.5; });
+  const cats=Object.keys(counts);
+  const real=distribucionReal[dStr]||{};
+  const el=document.getElementById('distRealForm');
+  if(!cats.length){
+    el.innerHTML='<p style="color:var(--muted);font-size:13px">Armá primero la grilla ideal de arriba — el registro real se arma solo con las categorías que uses ahí.</p>';
+    return;
+  }
+  el.innerHTML=cats.sort((a,b)=>counts[b]-counts[a]).map(catId=>{
+    const info=getCatInfo(catId);
+    const ideal=counts[catId];
+    const actual=real[catId]!==undefined?real[catId]:'';
+    const actualNum=parseFloat(actual)||0;
+    const pct=ideal?Math.min(100,Math.round(actualNum/ideal*100)):0;
+    return '<div class="dist-real-row">'
+      +'<div class="dist-real-head">'+catTag(catId)+'<span style="font-size:12px;color:var(--muted)">Ideal: '+ideal+'h</span></div>'
+      +'<div class="dist-real-input-row">'
+      +'<input type="number" step="0.5" min="0" class="form-input dist-real-input" id="distReal_'+catId+'" value="'+actual+'" placeholder="Horas reales" onchange="saveDistRealValue(\''+catId+'\')">'
+      +'<span style="font-size:12px;font-weight:700;color:'+(pct>=100?'var(--accent3)':'var(--muted)')+'">'+pct+'%</span>'
+      +'</div>'
+      +'<div class="bar-track" style="height:8px;margin-top:8px"><div class="bar-fill" style="width:'+pct+'%;background:'+info.color+'"></div></div>'
+      +'</div>';
+  }).join('');
+}
+function saveDistRealValue(catId){
+  const dStr=dateKey(distDate);
+  const raw=document.getElementById('distReal_'+catId).value;
+  const val=parseFloat(raw);
+  if(!distribucionReal[dStr]) distribucionReal[dStr]={};
+  if(isNaN(val)) delete distribucionReal[dStr][catId];
+  else distribucionReal[dStr][catId]=val;
+  saveLocal();
+  queueChange('saveDistribucionReal',{date:dStr,horas:distribucionReal[dStr],createdAt:new Date().toISOString()});
+  renderDistReal();
+}
+
 // ═══ MINI CALENDARIO (repeticion por fechas puntuales) ═══
 function calNavigate(delta){
   calViewDate=new Date(calViewDate.getFullYear(),calViewDate.getMonth()+delta,1);
@@ -809,6 +984,8 @@ function saveLocal(){
     localStorage.setItem('lucasNotas',JSON.stringify(notas));
     localStorage.setItem('lucasMaximas',JSON.stringify(maximas));
     localStorage.setItem('lucasCategorias',JSON.stringify(categorias));
+    localStorage.setItem('lucasDistIdeal',JSON.stringify(distribucionIdeal));
+    localStorage.setItem('lucasDistReal',JSON.stringify(distribucionReal));
   }catch(e){}
 }
 function loadLocal(){
@@ -819,7 +996,9 @@ function loadLocal(){
     notas     =JSON.parse(localStorage.getItem('lucasNotas')||'[]');
     maximas   =JSON.parse(localStorage.getItem('lucasMaximas')||'[]');
     categorias=JSON.parse(localStorage.getItem('lucasCategorias')||'[]');
-  }catch(e){tasks=[];habits=[];habitLogs={};notas=[];maximas=[];categorias=[];}
+    distribucionIdeal=JSON.parse(localStorage.getItem('lucasDistIdeal')||'null')||{bloques:new Array(48).fill(null)};
+    distribucionReal =JSON.parse(localStorage.getItem('lucasDistReal')||'{}');
+  }catch(e){tasks=[];habits=[];habitLogs={};notas=[];maximas=[];categorias=[];distribucionIdeal={bloques:new Array(48).fill(null)};distribucionReal={};}
 }
 
 // ═══ JSONP API ═══
@@ -922,6 +1101,19 @@ async function syncFromSheets(){
   const remoteCategorias=Array.isArray(data.categorias)?data.categorias.filter(c=>c&&c.id):[];
   if(remoteCategorias.length>0) categorias=remoteCategorias;
 
+  const remoteDistIdeal=data.distribucionIdeal;
+  if(remoteDistIdeal&&Array.isArray(remoteDistIdeal.bloques)&&remoteDistIdeal.bloques.length===48){
+    distribucionIdeal=remoteDistIdeal;
+  } else if(distribucionIdeal.bloques.some(b=>b)) {
+    queueChange('saveDistribucionIdeal',distribucionIdeal);
+  }
+  const remoteDistReal=Array.isArray(data.distribucionReal)?data.distribucionReal.filter(r=>r&&r.date):[];
+  if(remoteDistReal.length>0){
+    const merged={...distribucionReal};
+    remoteDistReal.forEach(r=>{ merged[r.date]=(r.horas&&typeof r.horas==='object')?r.horas:{}; });
+    distribucionReal=merged;
+  }
+
   const remoteHabits=Array.isArray(data.habits)?data.habits.map(h=>{
     if(!h||!h.id) return null;
     ['timeStart','timeEnd'].forEach(k=>{
@@ -959,6 +1151,7 @@ function switchView(name,btn){
   if(name==='hoy')       renderHoy();
   if(name==='semana')    renderSemana();
   if(name==='habitos')   renderHabitos();
+  if(name==='distribucion') renderDistribucion();
   if(name==='dashboard') renderDashboard(document.getElementById('dashRange').value);
   if(name==='notas')     renderNotas();
   if(name==='maximas')   renderMaximas();
@@ -973,6 +1166,7 @@ function renderCurrentView(){
   if(id==='habitos')   renderHabitos();
   if(id==='dashboard') renderDashboard(document.getElementById('dashRange').value);
   if(id==='notas')     renderNotas();
+  if(id==='distribucion') renderDistribucion();
 }
 
 // ═══ STATUS ═══
