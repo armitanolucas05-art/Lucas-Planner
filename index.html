@@ -296,8 +296,8 @@
 <nav>
   <button class="active" onclick="switchView('hoy',this)">Hoy</button>
   <button onclick="switchView('semana',this)">Semana</button>
-  <button onclick="switchView('habitos',this)">Hábitos</button>
   <button onclick="switchView('distribucion',this)">📐 Distribución</button>
+  <button onclick="switchView('habitos',this)">Hábitos</button>
   <button onclick="switchView('dashboard',this)">📊 Stats</button>
   <button onclick="switchView('notas',this)">📝 Notas</button>
   <button onclick="switchView('maximas',this)">💎 Máximas</button>
@@ -787,6 +787,28 @@ function migrateCategoriasIfNeeded(){
   localStorage.setItem('lucasCategoriasMigrated','1');
   renderCategoriaSelects();
 }
+// Categorías base para la Distribución diaria (Sueño, Comida, Gym, Caminata, Lectura...).
+// Se agregan una sola vez si todavía no existen; no pisa nada que el usuario ya haya creado.
+function seedCategoriasIniciales(){
+  if(localStorage.getItem('lucasCategoriasSeeded')) return;
+  const seeds=[
+    {id:'trabajo',  nombre:'Trabajo',  color:'#a08aff'},
+    {id:'sueno',    nombre:'Sueño',    color:'#6ab8ff'},
+    {id:'comida',   nombre:'Comida',   color:'#ffb86a'},
+    {id:'gym',      nombre:'Gym',      color:'#ff6aaa'},
+    {id:'caminata', nombre:'Caminata', color:'#6affa0'},
+    {id:'lectura',  nombre:'Lectura',  color:'#6ad4ff'}
+  ];
+  seeds.forEach(s=>{
+    if(categorias.find(c=>c.id===s.id)) return;
+    const cat=Object.assign({createdAt:new Date().toISOString()},s);
+    categorias.push(cat);
+    queueChange('saveCategoria',cat);
+  });
+  saveLocal();
+  localStorage.setItem('lucasCategoriasSeeded','1');
+  renderCategoriaSelects();
+}
 function renderCategoriasConfig(){
   const el=document.getElementById('categoriasList');
   if(!el) return;
@@ -1132,6 +1154,7 @@ async function syncFromSheets(){
   if(remoteHabits.length>0) habits=remoteHabits;
   habitLogs=Object.assign({},habitLogs,remoteLogs);
   migrateCategoriasIfNeeded();
+  seedCategoriasIniciales();
   renderCategoriaSelects();
   saveLocal();
   setSyncStatus('ok');
@@ -2164,6 +2187,7 @@ function init(){
   loadLocal();
   loadSyncQueue();
   migrateCategoriasIfNeeded();
+  seedCategoriasIniciales();
   renderCategoriaSelects();
   selectedWeekDay=new Date();
   document.getElementById('headerDate').textContent=formatShort(new Date());
