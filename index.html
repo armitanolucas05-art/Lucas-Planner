@@ -1031,9 +1031,15 @@ function getAllForDate(d){
     if(!t.recurring&&t.date===key) return true;
     return false;
   }).map(t=>applyOverride(t,key));
-  // Habits (from habits list)
+  // Habits (from habits list) — solo desde el día en que se creó el hábito en adelante,
+  // nunca retroactivo a días anteriores a su creación.
   const fromHabits=habits.filter(h=>{
-    return Array.isArray(h.days)&&h.days.includes(dow);
+    if(!Array.isArray(h.days)||!h.days.includes(dow)) return false;
+    if(h.createdAt){
+      const created=dateKey(new Date(h.createdAt));
+      if(key<created) return false;
+    }
+    return true;
   }).map(h=>({
     id:h.id, title:h.name, category:'habitos',
     timeStart:h.timeStart, timeEnd:h.timeEnd,
@@ -1321,7 +1327,7 @@ function renderDashboard(days){
   for(let i=numDays-1;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);dates.push(new Date(d.getFullYear(),d.getMonth(),d.getDate()));}
 
   const dayStats=dates.map(d=>{
-    const dt=getAllForDate(d);
+    const dt=getAllForDate(d).filter(t=>!t.isHabit);
     const dStr=dateKey(d);
     const done  =dt.filter(t=>getStatusForDate(t,dStr)==='done').length;
     const missed=dt.filter(t=>getStatusForDate(t,dStr)==='missed').length;
@@ -1391,7 +1397,7 @@ function renderDashboard(days){
   <div class="dash-grid">
 
     <div class="dash-card">
-      ${dashHeader('Resumen — últimos '+numDays+' días','resumen','Cuenta todas las ocurrencias de tareas y hábitos dentro del rango de fechas elegido arriba (incluye pendientes, realizadas y no realizadas). El % promedio diario es el promedio de los porcentajes de cada día — cada día pesa igual, sin importar cuántas tareas tuvo ese día.')}
+      ${dashHeader('Resumen — últimos '+numDays+' días','resumen','Cuenta solo ocurrencias de TAREAS dentro del rango de fechas elegido arriba (no incluye hábitos, que tienen su propia tarjeta). Incluye pendientes, realizadas y no realizadas. El % promedio diario es el promedio de los porcentajes de cada día — cada día pesa igual, sin importar cuántas tareas tuvo ese día.')}
       <div class="kpi-row">
         <div class="kpi-item"><div class="kpi-num" style="color:var(--accent)">${totalTasks}</div><div class="kpi-label">Ocurrencias totales</div></div>
         <div class="kpi-item"><div class="kpi-num" style="color:var(--accent3)">${totalDone}</div><div class="kpi-label">Realizadas</div></div>
@@ -1449,7 +1455,7 @@ function renderDashboard(days){
     </div>
 
     <div class="dash-card">
-      ${dashHeader('Últimos 7 días','ult7','Siempre muestra los últimos 7 días corridos, sin importar el rango elegido arriba.')}
+      ${dashHeader('Últimos 7 días','ult7','Siempre muestra los últimos 7 días corridos, sin importar el rango elegido arriba. Solo cuenta tareas, no hábitos.')}
       <div class="week-completion">
         ${last7.map(d=>{
           const h=d.pct!==null?Math.max(4,(d.pct/100)*52):4;
